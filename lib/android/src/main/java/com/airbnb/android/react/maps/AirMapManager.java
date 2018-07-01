@@ -38,6 +38,10 @@ public class AirMapManager extends ViewGroupManager<AirMapView> {
   private static final int FIT_TO_COORDINATES = 7;
   private static final int SET_MAP_BOUNDARIES = 8;
   private static final int ANIMATE_TO_NAVIGATION = 9;
+  private static final float LN2 = 0.6931471805599453f;
+  private static final int WORLD_PX_HEIGHT = 256;
+  private static final int WORLD_PX_WIDTH = 256;
+  private static final int ZOOM_MAX = 21;
 
 
   private final Map<String, Integer> MAP_TYPES = MapBuilder.of(
@@ -241,6 +245,34 @@ public class AirMapManager extends ViewGroupManager<AirMapView> {
     }
   }
 
+  // Credits to https://stackoverflow.com/questions/10620515/how-do-i-determine-the-zoom-level-of-a-latlngbounds-before-using-map-fitbounds#answer-23462828
+  public float getBoundsZoomLevel(LatLngBounds bounds, int widthPx, int heightPx, float minZoom, float maxZoom){
+
+    LatLng ne = bounds.northeast;
+    LatLng sw = bounds.southwest;
+
+    double latFraction = (latRad(ne.latitude) - latRad(sw.latitude)) / Math.PI;
+
+    double lngDiff = ne.longitude - sw.longitude;
+    double lngFraction = ((lngDiff < 0) ? (lngDiff + 360) : lngDiff) / 360;
+
+    float density = this.appContext.getResources().getDisplayMetrics().density;
+    float latZoom = zoom(heightPx, WORLD_PX_HEIGHT * density, latFraction);
+    float lngZoom = zoom(widthPx, WORLD_PX_WIDTH * density, lngFraction);
+
+    float result = Math.min(latZoom, lngZoom);
+    return Math.max(minZoom, Math.min(result, maxZoom));
+  }
+
+  private double latRad(double lat) {
+    double sin = Math.sin(lat * Math.PI / 180);
+    double radX2 = Math.log((1 + sin) / (1 - sin)) / 2;
+    return Math.max(Math.min(radX2, Math.PI), -Math.PI) / 2;
+  }
+  private float zoom(int mapPx, float worldPx, double fraction) {
+    return (float)Math.log(mapPx / worldPx / fraction) / LN2;
+  }
+
   @Override
   public void receiveCommand(AirMapView view, int commandId, @Nullable ReadableArray args) {
     Integer duration;
@@ -258,10 +290,19 @@ public class AirMapManager extends ViewGroupManager<AirMapView> {
         lng = region.getDouble("longitude");
         lat = region.getDouble("latitude");
         LatLng location = new LatLng(lat, lng);
+        float zoom = view.map.getCameraPosition().zoom;
+        if (region.hasKey(("longitudeDelta")) && region.hasKey(("latitudeDelta"))) {
+            lngDelta = region.getDouble("longitudeDelta");
+            latDelta = region.getDouble("latitudeDelta");
+            zoom = getBoundsZoomLevel(new LatLngBounds(
+                    new LatLng(lat - latDelta / 2, lng - lngDelta / 2), // southwest
+                    new LatLng(lat + latDelta / 2, lng + lngDelta / 2)  // northeast
+            ), view.getWidth(), view.getHeight(), view.map.getMinZoomLevel(), view.map.getMaxZoomLevel());
+        }
         bearing = (float)args.getDouble(1);
         angle = (float)args.getDouble(2);
         duration = args.getInt(3);
-        view.animateToNavigation(location, bearing, angle, duration);
+        view.animateToNavigation(location, zoom, bearing, angle, duration);
         break;
 
       case ANIMATE_TO_REGION:
